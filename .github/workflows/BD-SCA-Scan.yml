@@ -5,9 +5,9 @@ on:
     branches: [ main, master, develop ]
   pull_request:
     branches: [ main, master ]
-  schedule:
+  # schedule:
     # 매주 일요일 오전 2시(UTC)에 실행
-    - cron: '0 2 * * 0'
+    # - cron: '0 2 * * 0'
   workflow_dispatch:
     # 수동 실행 가능
 
@@ -253,61 +253,105 @@ jobs:
     - name: Create security issue on high vulnerabilities
       if: always() && steps.scan_results.outputs.VULNERABILITY_COUNT > 0
       uses: actions/github-script@v7
+      continue-on-error: true  # Issues가 비활성화된 경우 무시
       with:
         script: |
           const vulnCount = parseInt('${{ steps.scan_results.outputs.VULNERABILITY_COUNT }}');
+          const criticalCount = parseInt('${{ steps.scan_results.outputs.CRITICAL_COUNT }}');
           const scanStatus = '${{ steps.scan_results.outputs.SCAN_STATUS }}';
           
-          if (vulnCount >= 5) {  // 5개 이상의 취약점이 발견된 경우
-            github.rest.issues.create({
+          // Issues 기능이 활성화되어 있는지 확인
+          try {
+            const { data: repo } = await github.rest.repos.get({
               owner: context.repo.owner,
-              repo: context.repo.repo,
-              title: `🚨 보안 취약점 발견: ${vulnCount}개 - ${new Date().toISOString().split('T')[0]}`,
-              body: `BlackDuck SCA 스캔에서 **${vulnCount}개**의 취약점이 발견되었습니다.
-              
-              ## 스캔 정보
-              - **프로젝트**: ${process.env.DETECT_PROJECT_NAME}
-              - **브랜치**: ${context.ref}
-              - **커밋**: ${context.sha}
-              - **스캔 상태**: ${scanStatus}
-              
-              ## 조치 필요
-              1. [실행 로그](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})에서 상세 보고서 확인
-              2. 고위험 취약점 우선 해결
-              3. 의존성 업데이트 검토
-              
-              **⚠️ 이 이슈는 취약점이 해결될 때까지 열어두시기 바랍니다.**`,
-              labels: ['security', 'vulnerability', 'blackduck', 'high-priority']
+              repo: context.repo.repo
             });
+            
+            if (!repo.has_issues) {
+              console.log('Issues 기능이 비활성화되어 있어 이슈를 생성할 수 없습니다.');
+              console.log(`대신 로그에 보안 요약을 출력합니다:`);
+              console.log(`🚨 보안 스캔 결과: ${vulnCount}개 항목 발견 (Critical: ${criticalCount}개)`);
+              console.log(`📊 상세 보고서는 Actions 아티팩트에서 확인하세요.`);
+              return;
+            }
+            
+            if (vulnCount >= 5 || criticalCount > 0) {  // 5개 이상 또는 Critical이 있는 경우
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: `🚨 보안 취약점 발견: ${vulnCount}개 - ${new Date().toISOString().split('T')[0]}`,
+                body: `BlackDuck SCA 스캔에서 **${vulnCount}개**의 항목이 발견되었습니다.
+                
+                ## 스캔 정보
+                - **프로젝트**: ${process.env.DETECT_PROJECT_NAME}
+                - **브랜치**: ${context.ref}
+                - **커밋**: ${context.sha}
+                - **스캔 상태**: ${scanStatus}
+                - **Critical 항목**: ${criticalCount}개
+                
+                ## 조치 필요
+                1. [실행 로그](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})에서 상세 보고서 확인
+                2. Critical 항목 우선 해결
+                3. 의존성 업데이트 검토
+                4. SARIF 보고서 다운로드 및 분석
+                
+                **⚠️ 이 이슈는 취약점이 해결될 때까지 열어두시기 바랍니다.**`,
+                labels: ['security', 'vulnerability', 'blackduck', 'high-priority']
+              });
+            }
+          } catch (error) {
+            console.log('이슈 생성 중 오류가 발생했습니다:', error.message);
+            console.log('보안 스캔 결과를 로그에 출력합니다:');
+            console.log(`🚨 ${vulnCount}개 항목 발견 (Critical: ${criticalCount}개)`);
           }
 
   notify-results:
     needs: blackduck-scan
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     if: always() && needs.blackduck-scan.result == 'failure'
     steps:
     - name: Notify on scan failure
       uses: actions/github-script@v7
+      continue-on-error: true  # Issues가 비활성화된 경우 무시
       with:
         script: |
-          github.rest.issues.create({
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            title: `🚨 BlackDuck SCA 스캔 실패 - ${new Date().toISOString().split('T')[0]}`,
-            body: `BlackDuck SCA 스캔이 실패했습니다.
+          console.log('🚨 BlackDuck SCA 스캔이 실패했습니다.');
+          console.log(`브랜치: ${context.ref}`);
+          console.log(`커밋: ${context.sha}`);
+          console.log(`실행 링크: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`);
+          
+          try {
+            // Issues 기능이 활성화되어 있는지 확인
+            const { data: repo } = await github.rest.repos.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo
+            });
             
-            ## 실행 정보
-            - **브랜치**: ${context.ref}
-            - **커밋**: ${context.sha}
-            - **트리거**: ${context.eventName}
-            - **실행 링크**: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}
-            
-            ## 가능한 원인
-            - BlackDuck 서버 연결 문제
-            - 인증 토큰 만료
-            - 프로젝트 빌드 실패
-            - 정책 위반 (BLOCKER/CRITICAL)
-            
-            **🔧 로그를 확인하여 문제를 해결해주세요.**`,
-            labels: ['security', 'blackduck', 'failure', 'urgent']
-          });
+            if (repo.has_issues) {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: `🚨 BlackDuck SCA 스캔 실패 - ${new Date().toISOString().split('T')[0]}`,
+                body: `BlackDuck SCA 스캔이 실패했습니다.
+                
+                ## 실행 정보
+                - **브랜치**: ${context.ref}
+                - **커밋**: ${context.sha}
+                - **트리거**: ${context.eventName}
+                - **실행 링크**: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}
+                
+                ## 가능한 원인
+                - BlackDuck 서버 연결 문제
+                - 인증 토큰 만료
+                - 프로젝트 빌드 실패
+                - 정책 위반 (BLOCKER/CRITICAL)
+                
+                **🔧 로그를 확인하여 문제를 해결해주세요.**`,
+                labels: ['security', 'blackduck', 'failure', 'urgent']
+              });
+            } else {
+              console.log('Issues 기능이 비활성화되어 있습니다. 로그로만 알림을 표시합니다.');
+            }
+          } catch (error) {
+            console.log('Issues 생성 실패, 로그로 알림을 대체합니다:', error.message);
+          }
