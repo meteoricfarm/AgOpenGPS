@@ -5,9 +5,9 @@ on:
     branches: [ main, master, develop ]
   pull_request:
     branches: [ main, master ]
-  # schedule:
+  schedule:
     # 매주 일요일 오전 2시(UTC)에 실행
-    # - cron: '0 2 * * 0'
+    - cron: '0 2 * * 0'
   workflow_dispatch:
     # 수동 실행 가능
 
@@ -120,30 +120,31 @@ jobs:
     
     - name: Run BlackDuck Security Scan
       uses: blackduck-inc/black-duck-security-scan@v2
-      env:
-        # BlackDuck 서버 연결 정보
-        BLACKDUCK_URL: ${{ secrets.BLACKDUCK_URL }}
-        BLACKDUCK_API_TOKEN: ${{ secrets.BLACKDUCK_API_TOKEN }}
-        # 프로젝트 설정
-        DETECT_PROJECT_NAME: ${{ env.DETECT_PROJECT_NAME }}
-        DETECT_PROJECT_VERSION_NAME: ${{ env.DETECT_PROJECT_VERSION_NAME }}
-        DETECT_CODE_LOCATION_NAME: "${{ env.DETECT_PROJECT_NAME }}-${{ github.ref_name }}"
-        # 스캔 설정
-        DETECT_SOURCE_PATH: "."
-        DETECT_EXCLUDED_DIRECTORIES: "bin,obj,packages,.git,.vs,.vscode,node_modules"
-        DETECT_DETECTOR_SEARCH_DEPTH: "10"
-        # .NET 관련 설정
-        DETECT_NUGET_INSPECTOR_NAME: "classic"
-        DETECT_DOTNET_PATH: "/usr/share/dotnet/dotnet"
-        # 정책 및 보고서 설정
-        DETECT_POLICY_CHECK_FAIL_ON_SEVERITIES: "BLOCKER,CRITICAL"
-        DETECT_RISK_REPORT_PDF: "true"
-        DETECT_NOTICES_REPORT: "true"
-        # 로그 레벨
-        LOGGING_LEVEL_COM_SYNOPSYS_INTEGRATION: "INFO"
       with:
-        # Action 설정
-        args: '--detect.cleanup=false'
+        # BlackDuck SCA 설정
+        blackducksca_url: ${{ secrets.BLACKDUCK_URL }}
+        blackducksca_token: ${{ secrets.BLACKDUCK_API_TOKEN }}
+        blackducksca_scan_full: true
+        blackducksca_scan_failure_severities: 'BLOCKER,CRITICAL'
+        blackducksca_reports_sarif_create: true
+        blackducksca_prComment_enabled: true
+        blackducksca_waitForScan: true
+        # Detect 설정
+        detect_args: |
+          --detect.project.name=${{ env.DETECT_PROJECT_NAME }}
+          --detect.project.version.name=${{ env.DETECT_PROJECT_VERSION_NAME }}
+          --detect.code.location.name=${{ env.DETECT_PROJECT_NAME }}-${{ github.ref_name }}
+          --detect.source.path=.
+          --detect.excluded.directories=bin,obj,packages,.git,.vs,.vscode,node_modules
+          --detect.detector.search.depth=10
+          --detect.nuget.inspector.name=classic
+          --detect.dotnet.path=C:\Program Files\dotnet\dotnet.exe
+          --detect.risk.report.pdf=true
+          --detect.notices.report=true
+          --detect.cleanup=false
+          --logging.level.com.synopsys.integration=INFO
+        # GitHub 토큰
+        github_token: ${{ secrets.GITHUB_TOKEN }}
     
     - name: Upload BlackDuck Reports
       uses: actions/upload-artifact@v4
