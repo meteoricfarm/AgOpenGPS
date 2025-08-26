@@ -5,8 +5,8 @@ on:
     branches: [main, master, develop]
   pull_request:
     branches: [main, master]
-  schedule:
-    - cron: '0 2 * * 0'
+  # schedule:
+    # - cron: '0 2 * * 0'
   workflow_dispatch:
 
 env:
@@ -260,67 +260,122 @@ jobs:
                   const vulnerabilities = sarifContent.runs[0].results;
                   console.log('발견된 취약점 수: ' + vulnerabilities.length + '개');
                   
-                  const maxIssues = Math.min(vulnerabilities.length, 10);
-                  
-                  for (let i = 0; i < maxIssues; i++) {
-                    const vuln = vulnerabilities[i];
-                    
-                    const ruleId = vuln.ruleId || 'Unknown';
-                    const message = vuln.message?.text || 'No description available';
-                    const level = vuln.level || 'info';
+                  // 컴포넌트별로 취약점 그룹화
+                  const componentGroups = {};
+                  vulnerabilities.forEach(vuln => {
                     const component = vuln.locations?.[0]?.physicalLocation?.artifactLocation?.uri || 'Unknown component';
+                    if (!componentGroups[component]) {
+                      componentGroups[component] = [];
+                    }
+                    componentGroups[component].push(vuln);
+                  });
+                  
+                  // BlackDuck View URL 생성
+                  const blackduckUrl = process.env.BLACKDUCK_URL || '${{ secrets.BLACKDUCK_URL }}';
+                  const projectName = process.env.DETECT_PROJECT_NAME;
+                  const versionName = process.env.DETECT_PROJECT_VERSION_NAME;
+                  const blackduckViewUrl = blackduckUrl + '/api/projects/' + encodeURIComponent(projectName) + '/versions/' + encodeURIComponent(versionName);
+                  
+                  let processedComponents = 0;
+                  const maxComponents = 10; // 최대 10개 컴포넌트까지 처리
+                  
+                  for (const [component, vulnList] of Object.entries(componentGroups)) {
+                    if (processedComponents >= maxComponents) break;
                     
-                    const issueTitle = '취약점: ' + ruleId + ' - ' + component;
+                    const issueTitle = '보안 취약점: ' + component + ' (' + vulnList.length + '개)';
                     
-                    if (existingTitles.some(title => title.includes(ruleId) && title.includes(component))) {
+                    // 중복 체크
+                    if (existingTitles.some(title => title.includes(component) && title.includes('보안 취약점'))) {
                       console.log('중복 이슈 스킵: ' + issueTitle);
                       continue;
                     }
                     
-                    let severityLabel, severityIcon, priorityLabel;
-                    switch(level.toLowerCase()) {
-                      case 'error':
-                        severityLabel = 'critical';
+                    // 심각도별 분류
+                    let criticalCount = 0;
+                    let highCount = 0;
+                    let mediumCount = 0;
+                    let maxSeverity = 'medium';
+                    
+                    vulnList.forEach(vuln => {
+                      const level = vuln.level || 'info';
+                      switch(level.toLowerCase()) {
+                        case 'error':
+                          criticalCount++;
+                          maxSeverity = 'critical';
+                          break;
+                        case 'warning':
+                          highCount++;
+                          if (maxSeverity !== 'critical') maxSeverity = 'high';
+                          break;
+                        default:
+                          mediumCount++;
+                      }
+                    });
+                    
+                    // 최고 심각도에 따른 라벨링
+                    let severityIcon, priorityLabel;
+                    switch(maxSeverity) {
+                      case 'critical':
                         severityIcon = '🔴';
                         priorityLabel = 'high-priority';
                         break;
-                      case 'warning':
-                        severityLabel = 'high';
+                      case 'high':
                         severityIcon = '🟠';
                         priorityLabel = 'medium-priority';
                         break;
                       default:
-                        severityLabel = 'medium';
                         severityIcon = '🟡';
                         priorityLabel = 'low-priority';
                     }
                     
-                    const ruleInfo = sarifContent.runs[0].tool?.driver?.rules?.find(rule => rule.id === ruleId);
-                    const description = ruleInfo?.fullDescription?.text || ruleInfo?.shortDescription?.text || message;
-                    const helpUri = ruleInfo?.helpUri || '';
+                    // 이슈 본문 생성
+                    let issueBody = severityIcon + ' **컴포넌트**: ' + component + '\n';
+                    issueBody += '**발견된 취약점**: ' + vulnList.length + '개\n\n';
                     
-                    let issueBody = severityIcon + ' **심각도**: ' + severityLabel.toUpperCase() + '\n\n';
-                    issueBody += '## 취약점 정보\n';
-                    issueBody += '- **Rule ID**: ' + ruleId + '\n';
-                    issueBody += '- **컴포넌트**: ' + component + '\n';
-                    issueBody += '- **레벨**: ' + level + '\n';
-                    issueBody += '- **스캔 일시**: ' + new Date().toISOString().split('T')[0] + '\n\n';
-                    issueBody += '## 설명\n' + description + '\n\n';
+                    // 심각도별 요약
+                    issueBody += '## 심각도별 요약\n';
+                    if (criticalCount > 0) issueBody += '- 🔴 **Critical**: ' + criticalCount + '개\n';
+                    if (highCount > 0) issueBody += '- 🟠 **High**: ' + highCount + '개\n';
+                    if (mediumCount > 0) issueBody += '- 🟡 **Medium/Low**: ' + mediumCount + '개\n';
+                    issueBody += '\n';
                     
-                    if (helpUri) {
-                      issueBody += '## 참고 자료\n[취약점 상세 정보](' + helpUri + ')\n\n';
-                    }
+                    // 개별 취약점 목록
+                    issueBody += '## 취약점 상세 목록\n';
+                    vulnList.forEach((vuln, index) => {
+                      const ruleId = vuln.ruleId || 'Unknown';
+                      const message = vuln.message?.text || 'No description available';
+                      const level = vuln.level || 'info';
+                      
+                      let levelIcon = '🟡';
+                      if (level.toLowerCase() === 'error') levelIcon = '🔴';
+                      else if (level.toLowerCase() === 'warning') levelIcon = '🟠';
+                      
+                      issueBody += (index + 1) + '. ' + levelIcon + ' **' + ruleId + '**\n';
+                      issueBody += '   - **설명**: ' + message.substring(0, 100) + (message.length > 100 ? '...' : '') + '\n';
+                      issueBody += '   - **레벨**: ' + level + '\n\n';
+                    });
                     
-                    issueBody += '## 조치 방법\n';
-                    issueBody += '1. 해당 컴포넌트의 최신 버전 확인\n';
-                    issueBody += '2. 보안 패치가 포함된 버전으로 업데이트\n';
-                    issueBody += '3. 대안 라이브러리 검토 (필요시)\n';
-                    issueBody += '4. 취약점 해결 후 재스캔 실행\n\n';
+                    // BlackDuck 링크 및 조치 방법
+                    issueBody += '## 상세 분석 및 해결방법\n';
+                    issueBody += '🔗 **BlackDuck 상세 보고서**: [프로젝트 보기](' + blackduckViewUrl + ')\n\n';
+                    
+                    issueBody += '## 권장 조치사항\n';
+                    issueBody += '1. **우선순위**: Critical → High → Medium 순으로 해결\n';
+                    issueBody += '2. **컴포넌트 업데이트**: ' + component + '의 최신 버전 확인\n';
+                    issueBody += '3. **보안 패치**: 보안 패치가 포함된 버전으로 업데이트\n';
+                    issueBody += '4. **의존성 검토**: 간접 의존성까지 포함하여 영향 범위 확인\n';
+                    issueBody += '5. **대안 검토**: 필요시 보안성이 검증된 대안 라이브러리 고려\n';
+                    issueBody += '6. **재스캔**: 수정 후 워크플로우 재실행으로 해결 확인\n\n';
+                    
                     issueBody += '## 관련 정보\n';
                     issueBody += '- **프로젝트**: ' + process.env.DETECT_PROJECT_NAME + '\n';
+                    issueBody += '- **버전**: ' + process.env.DETECT_PROJECT_VERSION_NAME + '\n';
                     issueBody += '- **브랜치**: ' + context.ref + '\n';
-                    issueBody += '- **실행 로그**: [Actions 로그](' + context.serverUrl + '/' + context.repo.owner + '/' + context.repo.repo + '/actions/runs/' + context.runId + ')\n\n';
-                    issueBody += '> 이 이슈는 BlackDuck SCA 스캔에서 자동으로 생성되었습니다.';
+                    issueBody += '- **스캔 일시**: ' + new Date().toISOString().split('T')[0] + '\n';
+                    issueBody += '- **실행 로그**: [GitHub Actions](' + context.serverUrl + '/' + context.repo.owner + '/' + context.repo.repo + '/actions/runs/' + context.runId + ')\n';
+                    issueBody += '- **아티팩트**: [SARIF 보고서 다운로드](' + context.serverUrl + '/' + context.repo.owner + '/' + context.repo.repo + '/actions/runs/' + context.runId + ')\n\n';
+                    
+                    issueBody += '> 이 이슈는 BlackDuck SCA 스캔에서 자동으로 생성되었습니다. ' + vulnList.length + '개의 취약점이 동일 컴포넌트에서 발견되어 그룹화하였습니다.';
 
                     try {
                       const issue = await github.rest.issues.create({
@@ -331,14 +386,17 @@ jobs:
                         labels: [
                           'blackduck-vulnerability',
                           'security',
-                          severityLabel,
+                          maxSeverity,
                           priorityLabel,
+                          'component-group',
                           'auto-generated'
                         ]
                       });
                       
-                      console.log('이슈 생성 완료: ' + issueTitle + ' (#' + issue.data.number + ')');
+                      console.log('그룹 이슈 생성 완료: ' + issueTitle + ' (#' + issue.data.number + ')');
+                      processedComponents++;
                       
+                      // API 속도 제한 방지
                       await new Promise(resolve => setTimeout(resolve, 1000));
                       
                     } catch (error) {
@@ -346,14 +404,15 @@ jobs:
                     }
                   }
                   
-                  if (vulnerabilities.length > 10) {
-                    console.log((vulnerabilities.length - 10) + '개의 추가 취약점이 있습니다.');
+                  console.log('총 ' + processedComponents + '개 컴포넌트의 이슈를 생성했습니다.');
+                  if (Object.keys(componentGroups).length > maxComponents) {
+                    console.log((Object.keys(componentGroups).length - maxComponents) + '개의 추가 컴포넌트가 있습니다.');
                   }
                 }
               }
             }
           } catch (error) {
-            console.log('개별 취약점 이슈 생성 중 오류: ' + error.message);
+            console.log('취약점 이슈 생성 중 오류: ' + error.message);
           }
 
   notify-results:
