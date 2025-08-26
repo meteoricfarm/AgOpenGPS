@@ -18,7 +18,7 @@ env:
 
 jobs:
   blackduck-scan:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest  # AgOpenGPS는 Windows Forms 프로젝트일 가능성이 높음
     name: BlackDuck Security Scan
     
     steps:
@@ -35,11 +35,88 @@ jobs:
           7.0.x
           8.0.x
     
+    - name: Setup MSBuild (for .NET Framework projects)
+      uses: microsoft/setup-msbuild@v2
+      if: runner.os == 'Windows'
+    
+    - name: Setup NuGet
+      uses: nuget/setup-nuget@v2
+    
+    - name: Find solution/project files
+      id: find_projects
+      run: |
+        # .sln 파일 찾기
+        $SLN_FILES = Get-ChildItem -Path . -Name "*.sln" -Recurse | Select-Object -First 1
+        # .csproj 파일 찾기
+        $CSPROJ_FILES = Get-ChildItem -Path . -Name "*.csproj" -Recurse
+        
+        Write-Host "Found solution files:"
+        Get-ChildItem -Path . -Name "*.sln" -Recurse
+        Write-Host "Found project files:"
+        Get-ChildItem -Path . -Name "*.csproj" -Recurse
+        
+        if ($SLN_FILES) {
+          Write-Host "Using solution file: $SLN_FILES"
+          echo "BUILD_FILE=$SLN_FILES" >> $env:GITHUB_OUTPUT
+          echo "BUILD_TYPE=solution" >> $env:GITHUB_OUTPUT
+        } elseif ($CSPROJ_FILES) {
+          # 첫 번째 csproj 파일 사용
+          $FIRST_CSPROJ = $CSPROJ_FILES | Select-Object -First 1
+          Write-Host "Using project file: $FIRST_CSPROJ"
+          echo "BUILD_FILE=$FIRST_CSPROJ" >> $env:GITHUB_OUTPUT
+          echo "BUILD_TYPE=project" >> $env:GITHUB_OUTPUT
+        } else {
+          Write-Host "No .NET project files found"
+          echo "BUILD_FILE=" >> $env:GITHUB_OUTPUT
+          echo "BUILD_TYPE=none" >> $env:GITHUB_OUTPUT
+        }
+      shell: pwsh
+    
     - name: Restore NuGet packages
-      run: dotnet restore
+      if: steps.find_projects.outputs.BUILD_TYPE != 'none'
+      run: |
+        $BUILD_FILE = "${{ steps.find_projects.outputs.BUILD_FILE }}"
+        $BUILD_TYPE = "${{ steps.find_projects.outputs.BUILD_TYPE }}"
+        
+        if ($BUILD_FILE -and (Test-Path $BUILD_FILE)) {
+          Write-Host "Restoring packages for: $BUILD_FILE"
+          
+          # .NET Core/5+/.NET 프로젝트인 경우
+          if ($BUILD_FILE -match "\.csproj$|\.sln$") {
+            # 먼저 dotnet restore 시도
+            try {
+              dotnet restore $BUILD_FILE
+              Write-Host "Successfully restored with dotnet restore"
+            } catch {
+              Write-Host "dotnet restore failed, trying nuget restore"
+              nuget restore $BUILD_FILE
+            }
+          }
+        } else {
+          Write-Host "No valid project files found, skipping restore"
+        }
+      shell: pwsh
     
     - name: Build project
-      run: dotnet build --no-restore --configuration Release
+      if: steps.find_projects.outputs.BUILD_TYPE != 'none'
+      run: |
+        $BUILD_FILE = "${{ steps.find_projects.outputs.BUILD_FILE }}"
+        
+        if ($BUILD_FILE -and (Test-Path $BUILD_FILE)) {
+          Write-Host "Building: $BUILD_FILE"
+          
+          # .NET Core/5+/.NET 프로젝트 빌드 시도
+          try {
+            dotnet build $BUILD_FILE --no-restore --configuration Release
+            Write-Host "Successfully built with dotnet build"
+          } catch {
+            Write-Host "dotnet build failed, trying msbuild"
+            msbuild $BUILD_FILE /p:Configuration=Release /p:Platform="Any CPU"
+          }
+        } else {
+          Write-Host "No valid project files found, skipping build"
+        }
+      shell: pwsh
     
     - name: Run BlackDuck Security Scan
       uses: blackduck-inc/black-duck-security-scan@v2
