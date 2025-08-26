@@ -493,9 +493,9 @@ ${helpUri ? `## 참고 자료\n[취약점 상세 정보](${helpUri})` : ''}
 
 ## 🔍 개별 취약점 이슈
 개별 취약점별로 별도 이슈가 생성되었습니다. 다음 라벨로 필터링하여 확인하세요:
-- \`blackduck-vulnerability\`: 개별 취약점 이슈
-- \`critical\`: Critical 수준 취약점
-- \`high\`: High 수준 취약점
+- blackduck-vulnerability: 개별 취약점 이슈
+- critical: Critical 수준 취약점
+- high: High 수준 취약점
 
 ## 📁 관련 자료
 - [실행 로그](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})
