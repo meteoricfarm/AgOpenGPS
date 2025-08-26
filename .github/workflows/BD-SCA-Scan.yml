@@ -2,30 +2,27 @@ name: BlackDuck SCA Scan
 
 on:
   push:
-    branches: [ main, master, develop ]
+    branches: [main, master, develop]
   pull_request:
-    branches: [ main, master ]
+    branches: [main, master]
   schedule:
-    # 매주 일요일 오전 2시(UTC)에 실행
     - cron: '0 2 * * 0'
   workflow_dispatch:
-    # 수동 실행 가능
 
 env:
-  # BlackDuck 프로젝트 설정
   DETECT_PROJECT_NAME: "AgOpenGPS"
   DETECT_PROJECT_VERSION_NAME: "${{ github.ref_name }}-${{ github.run_number }}"
 
 jobs:
   blackduck-scan:
-    runs-on: windows-latest  # AgOpenGPS는 Windows Forms 프로젝트일 가능성이 높음
+    runs-on: windows-latest
     name: BlackDuck Security Scan
     
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
       with:
-        fetch-depth: 0  # 전체 히스토리를 가져와서 더 정확한 분석
+        fetch-depth: 0
     
     - name: Setup .NET
       uses: actions/setup-dotnet@v4
@@ -35,7 +32,7 @@ jobs:
           7.0.x
           8.0.x
     
-    - name: Setup MSBuild (for .NET Framework projects)
+    - name: Setup MSBuild
       uses: microsoft/setup-msbuild@v2
       if: runner.os == 'Windows'
     
@@ -44,10 +41,9 @@ jobs:
 
     - name: Find solution/project files
       id: find_projects
+      shell: pwsh
       run: |
-        # .sln 파일 찾기
         $SLN_FILES = Get-ChildItem -Path . -Name "*.sln" -Recurse | Select-Object -First 1
-        # .csproj 파일 찾기
         $CSPROJ_FILES = Get-ChildItem -Path . -Name "*.csproj" -Recurse
         
         Write-Host "Found solution files:"
@@ -60,7 +56,6 @@ jobs:
           echo "BUILD_FILE=$SLN_FILES" >> $env:GITHUB_OUTPUT
           echo "BUILD_TYPE=solution" >> $env:GITHUB_OUTPUT
         } elseif ($CSPROJ_FILES) {
-          # 첫 번째 csproj 파일 사용
           $FIRST_CSPROJ = $CSPROJ_FILES | Select-Object -First 1
           Write-Host "Using project file: $FIRST_CSPROJ"
           echo "BUILD_FILE=$FIRST_CSPROJ" >> $env:GITHUB_OUTPUT
@@ -70,20 +65,15 @@ jobs:
           echo "BUILD_FILE=" >> $env:GITHUB_OUTPUT
           echo "BUILD_TYPE=none" >> $env:GITHUB_OUTPUT
         }
-      shell: pwsh
     
     - name: Restore NuGet packages
       if: steps.find_projects.outputs.BUILD_TYPE != 'none'
+      shell: pwsh
       run: |
-        $BUILD_FILE = "${{ steps.find_projects.outputs.BUILD_FILE }}"
-        $BUILD_TYPE = "${{ steps.find_projects.outputs.BUILD_TYPE }}"
-        
+        $BUILD_FILE = "${{ steps.find_projects.outputs.BUILD_FILE }}"        
         if ($BUILD_FILE -and (Test-Path $BUILD_FILE)) {
-          Write-Host "Restoring packages for: $BUILD_FILE"
-          
-          # .NET Core/5+/.NET 프로젝트인 경우
+          Write-Host "Restoring packages for: $BUILD_FILE"          
           if ($BUILD_FILE -match "\.csproj$|\.sln$") {
-            # 먼저 dotnet restore 시도
             try {
               dotnet restore $BUILD_FILE
               Write-Host "Successfully restored with dotnet restore"
@@ -95,17 +85,14 @@ jobs:
         } else {
           Write-Host "No valid project files found, skipping restore"
         }
-      shell: pwsh
     
     - name: Build project
       if: steps.find_projects.outputs.BUILD_TYPE != 'none'
+      shell: pwsh
       run: |
-        $BUILD_FILE = "${{ steps.find_projects.outputs.BUILD_FILE }}"
-        
+        $BUILD_FILE = "${{ steps.find_projects.outputs.BUILD_FILE }}"        
         if ($BUILD_FILE -and (Test-Path $BUILD_FILE)) {
-          Write-Host "Building: $BUILD_FILE"
-          
-          # .NET Core/5+/.NET 프로젝트 빌드 시도
+          Write-Host "Building: $BUILD_FILE"          
           try {
             dotnet build $BUILD_FILE --no-restore --configuration Release
             Write-Host "Successfully built with dotnet build"
@@ -116,24 +103,21 @@ jobs:
         } else {
           Write-Host "No valid project files found, skipping build"
         }
-      shell: pwsh
     
     - name: Run BlackDuck Security Scan
       uses: blackduck-inc/black-duck-security-scan@v2
-      continue-on-error: true  # 정책 위반이 있어도 워크플로우 계속 진행
+      continue-on-error: true
       id: blackduck_scan
       with:
-        # BlackDuck SCA 설정
         blackducksca_url: ${{ secrets.BLACKDUCK_URL }}
         blackducksca_token: ${{ secrets.BLACKDUCK_API_TOKEN }}
         blackducksca_scan_full: true
-        blackducksca_scan_failure_severities: 'BLOCKER,CRITICAL'  # 심각한 수준만 실패로 처리
+        blackducksca_scan_failure_severities: 'BLOCKER,CRITICAL'
         blackducksca_reports_sarif_create: true
         blackducksca_prComment_enabled: true
         blackducksca_waitForScan: true
-        mark_build_status: 'success'  # 빌드 상태를 성공으로 표시
-        # Detect 설정
-        detect_args: |
+        mark_build_status: 'success'
+        detect_args: >-
           --detect.project.name=${{ env.DETECT_PROJECT_NAME }}
           --detect.project.version.name=${{ env.DETECT_PROJECT_VERSION_NAME }}
           --detect.code.location.name=${{ env.DETECT_PROJECT_NAME }}-${{ github.ref_name }}
@@ -147,7 +131,6 @@ jobs:
           --detect.cleanup=false
           --logging.level.com.synopsys.integration=INFO
           --detect.policy.check.fail.on.severities=NONE
-        # GitHub 토큰
         github_token: ${{ secrets.GITHUB_TOKEN }}
     
     - name: Upload BlackDuck Reports
@@ -168,8 +151,8 @@ jobs:
     - name: Parse scan results
       id: scan_results
       if: always()
+      shell: pwsh
       run: |
-        # SARIF 보고서에서 취약점 정보 추출
         $sarifFile = Get-ChildItem -Path ".blackduck\integrations\blackducksca\sarif" -Name "*.sarif.json" -ErrorAction SilentlyContinue | Select-Object -First 1
         
         if ($sarifFile) {
@@ -195,7 +178,6 @@ jobs:
           echo "CRITICAL_COUNT=$criticalCount" >> $env:GITHUB_OUTPUT
           echo "HIGH_COUNT=$highCount" >> $env:GITHUB_OUTPUT
           
-          # BlackDuck 스캔 결과 확인
           $scanResult = "${{ steps.blackduck_scan.outcome }}"
           if ($scanResult -eq "failure") {
             echo "POLICY_STATUS=IN_VIOLATION" >> $env:GITHUB_OUTPUT
@@ -212,48 +194,10 @@ jobs:
           echo "CRITICAL_COUNT=0" >> $env:GITHUB_OUTPUT
           echo "HIGH_COUNT=0" >> $env:GITHUB_OUTPUT
         }
-      shell: pwsh
     
-    - name: Comment PR with scan results
-      if: github.event_name == 'pull_request'
-      uses: actions/github-script@v7
-      with:
-        script: |
-          const scanStatus = '${{ steps.scan_results.outputs.SCAN_STATUS }}';
-          const policyStatus = '${{ steps.scan_results.outputs.POLICY_STATUS }}';
-          const vulnerabilityCount = '${{ steps.scan_results.outputs.VULNERABILITY_COUNT }}';
-          const criticalCount = '${{ steps.scan_results.outputs.CRITICAL_COUNT }}';
-          const highCount = '${{ steps.scan_results.outputs.HIGH_COUNT }}';
-          const scanResult = '${{ steps.blackduck_scan.outcome }}';
-          
-          const statusIcon = scanResult === 'success' ? '✅' : scanResult === 'failure' ? '⚠️' : '❓';
-          const policyIcon = policyStatus === 'IN_VIOLATION' ? '🚨' : policyStatus === 'NOT_IN_VIOLATION' ? '✅' : '⚠️';
-          
-          const comment = `## ${statusIcon} BlackDuck SCA 스캔 결과
-          
-          | 항목 | 결과 |
-          |------|------|
-          | **스캔 상태** | ${statusIcon} ${scanStatus} |
-          | **정책 준수** | ${policyIcon} ${policyStatus} |
-          | **총 발견 항목** | ${vulnerabilityCount}개 |
-          | **Critical** | ${criticalCount}개 |
-          | **High** | ${highCount}개 |
-          
-          📊 자세한 보고서는 [Artifacts](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})에서 확인하실 수 있습니다.
-          
-          ${policyStatus === 'IN_VIOLATION' ? '🚨 **정책 위반**: BlackDuck 정책을 검토하고 필요한 조치를 취해주세요.' : ''}
-          ${parseInt(criticalCount) > 0 ? `⚠️ **주의**: ${criticalCount}개의 Critical 항목이 발견되었습니다.` : ''}
-          `;
-          
-          github.rest.issues.createComment({
-            issue_number: context.issue.number,
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            body: comment
-          });
-
     - name: Security Summary
       if: always()
+      shell: pwsh
       run: |
         Write-Host "=== BlackDuck SCA 스캔 요약 ===" -ForegroundColor Cyan
         Write-Host "프로젝트: ${{ env.DETECT_PROJECT_NAME }}" -ForegroundColor White
@@ -267,27 +211,25 @@ jobs:
         $policyStatus = "${{ steps.scan_results.outputs.POLICY_STATUS }}"
         
         if ($vulnCount -and $vulnCount -ne "0") {
-          Write-Host "🚨 발견된 항목: $vulnCount 개" -ForegroundColor Yellow
+          Write-Host "발견된 항목: $vulnCount 개" -ForegroundColor Yellow
           Write-Host "   - Critical: $criticalCount 개" -ForegroundColor Red
           Write-Host "   - High: $highCount 개" -ForegroundColor Yellow
         } else {
-          Write-Host "✅ 발견된 항목: 없음" -ForegroundColor Green
+          Write-Host "발견된 항목: 없음" -ForegroundColor Green
         }
         
         if ($policyStatus -eq "IN_VIOLATION") {
-          Write-Host "🚨 정책 상태: 위반" -ForegroundColor Red
-          Write-Host "   ⚠️  BlackDuck 정책을 검토하고 필요한 조치를 취해주세요." -ForegroundColor Yellow
+          Write-Host "정책 상태: 위반" -ForegroundColor Red
         } elseif ($policyStatus -eq "NOT_IN_VIOLATION") {
-          Write-Host "✅ 정책 상태: 준수" -ForegroundColor Green
+          Write-Host "정책 상태: 준수" -ForegroundColor Green
         } else {
-          Write-Host "❓ 정책 상태: 알 수 없음" -ForegroundColor Yellow
+          Write-Host "정책 상태: 알 수 없음" -ForegroundColor Yellow
         }
         
-        Write-Host "📊 상세 보고서는 아티팩트에서 확인하세요." -ForegroundColor Cyan
+        Write-Host "상세 보고서는 아티팩트에서 확인하세요." -ForegroundColor Cyan
         Write-Host "================================" -ForegroundColor Cyan
-      shell: pwsh
-    
-    - name: Create individual vulnerability issues
+
+    - name: Create vulnerability issues
       if: always() && steps.scan_results.outputs.VULNERABILITY_COUNT > 0
       uses: actions/github-script@v7
       continue-on-error: true
@@ -296,9 +238,7 @@ jobs:
           const fs = require('fs');
           const path = require('path');
           
-          // SARIF 파일에서 개별 취약점 정보 추출
           try {
-            // SARIF 파일 찾기
             const sarifPath = '.blackduck\\integrations\\blackducksca\\sarif';
             if (fs.existsSync(sarifPath)) {
               const sarifFiles = fs.readdirSync(sarifPath).filter(file => file.endsWith('.sarif.json'));
@@ -307,7 +247,6 @@ jobs:
                 const sarifFilePath = path.join(sarifPath, sarifFiles[0]);
                 const sarifContent = JSON.parse(fs.readFileSync(sarifFilePath, 'utf8'));
                 
-                // 기존 이슈들 확인하여 중복 방지
                 const existingIssues = await github.rest.issues.listForRepo({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
@@ -319,30 +258,25 @@ jobs:
                 
                 if (sarifContent.runs && sarifContent.runs[0] && sarifContent.runs[0].results) {
                   const vulnerabilities = sarifContent.runs[0].results;
-                  console.log(`발견된 취약점 수: ${vulnerabilities.length}개`);
+                  console.log('발견된 취약점 수: ' + vulnerabilities.length + '개');
                   
-                  // 최대 10개까지만 이슈 생성 (스팸 방지)
                   const maxIssues = Math.min(vulnerabilities.length, 10);
                   
                   for (let i = 0; i < maxIssues; i++) {
                     const vuln = vulnerabilities[i];
                     
-                    // 취약점 정보 추출
                     const ruleId = vuln.ruleId || 'Unknown';
                     const message = vuln.message?.text || 'No description available';
                     const level = vuln.level || 'info';
                     const component = vuln.locations?.[0]?.physicalLocation?.artifactLocation?.uri || 'Unknown component';
                     
-                    // 중복 검사를 위한 제목 생성
-                    const issueTitle = `취약점: ${ruleId} - ${component}`;
+                    const issueTitle = '취약점: ' + ruleId + ' - ' + component;
                     
-                    // 이미 존재하는 이슈인지 확인
                     if (existingTitles.some(title => title.includes(ruleId) && title.includes(component))) {
-                      console.log(`중복 이슈 스킵: ${issueTitle}`);
+                      console.log('중복 이슈 스킵: ' + issueTitle);
                       continue;
                     }
                     
-                    // 심각도별 라벨 및 아이콘 설정
                     let severityLabel, severityIcon, priorityLabel;
                     switch(level.toLowerCase()) {
                       case 'error':
@@ -361,36 +295,32 @@ jobs:
                         priorityLabel = 'low-priority';
                     }
                     
-                    // 취약점 상세 정보
                     const ruleInfo = sarifContent.runs[0].tool?.driver?.rules?.find(rule => rule.id === ruleId);
                     const description = ruleInfo?.fullDescription?.text || ruleInfo?.shortDescription?.text || message;
                     const helpUri = ruleInfo?.helpUri || '';
                     
-                    const issueBody = `${severityIcon} **심각도**: ${severityLabel.toUpperCase()}
+                    let issueBody = severityIcon + ' **심각도**: ' + severityLabel.toUpperCase() + '\n\n';
+                    issueBody += '## 취약점 정보\n';
+                    issueBody += '- **Rule ID**: ' + ruleId + '\n';
+                    issueBody += '- **컴포넌트**: ' + component + '\n';
+                    issueBody += '- **레벨**: ' + level + '\n';
+                    issueBody += '- **스캔 일시**: ' + new Date().toISOString().split('T')[0] + '\n\n';
+                    issueBody += '## 설명\n' + description + '\n\n';
                     
-## 취약점 정보
-- **Rule ID**: ${ruleId}
-- **컴포넌트**: ${component}
-- **레벨**: ${level}
-- **스캔 일시**: ${new Date().toISOString().split('T')[0]}
-
-## 설명
-${description}
-
-${helpUri ? `## 참고 자료\n[취약점 상세 정보](${helpUri})` : ''}
-
-## 조치 방법
-1. 해당 컴포넌트의 최신 버전 확인
-2. 보안 패치가 포함된 버전으로 업데이트
-3. 대안 라이브러리 검토 (필요시)
-4. 취약점 해결 후 재스캔 실행
-
-## 관련 정보
-- **프로젝트**: ${process.env.DETECT_PROJECT_NAME}
-- **브랜치**: ${context.ref}
-- **실행 로그**: [Actions 로그](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})
-
-> 이 이슈는 BlackDuck SCA 스캔에서 자동으로 생성되었습니다.`;
+                    if (helpUri) {
+                      issueBody += '## 참고 자료\n[취약점 상세 정보](' + helpUri + ')\n\n';
+                    }
+                    
+                    issueBody += '## 조치 방법\n';
+                    issueBody += '1. 해당 컴포넌트의 최신 버전 확인\n';
+                    issueBody += '2. 보안 패치가 포함된 버전으로 업데이트\n';
+                    issueBody += '3. 대안 라이브러리 검토 (필요시)\n';
+                    issueBody += '4. 취약점 해결 후 재스캔 실행\n\n';
+                    issueBody += '## 관련 정보\n';
+                    issueBody += '- **프로젝트**: ' + process.env.DETECT_PROJECT_NAME + '\n';
+                    issueBody += '- **브랜치**: ' + context.ref + '\n';
+                    issueBody += '- **실행 로그**: [Actions 로그](' + context.serverUrl + '/' + context.repo.owner + '/' + context.repo.repo + '/actions/runs/' + context.runId + ')\n\n';
+                    issueBody += '> 이 이슈는 BlackDuck SCA 스캔에서 자동으로 생성되었습니다.';
 
                     try {
                       const issue = await github.rest.issues.create({
@@ -407,124 +337,23 @@ ${helpUri ? `## 참고 자료\n[취약점 상세 정보](${helpUri})` : ''}
                         ]
                       });
                       
-                      console.log(`이슈 생성 완료: ${issueTitle} (#${issue.data.number})`);
+                      console.log('이슈 생성 완료: ' + issueTitle + ' (#' + issue.data.number + ')');
                       
-                      // API 속도 제한 방지를 위한 딜레이
                       await new Promise(resolve => setTimeout(resolve, 1000));
                       
                     } catch (error) {
-                      console.log(`이슈 생성 실패 (${issueTitle}):`, error.message);
+                      console.log('이슈 생성 실패 (' + issueTitle + '): ' + error.message);
                     }
                   }
                   
                   if (vulnerabilities.length > 10) {
-                    console.log(`${vulnerabilities.length - 10}개의 추가 취약점이 있습니다. 요약 이슈에서 확인하세요.`);
+                    console.log((vulnerabilities.length - 10) + '개의 추가 취약점이 있습니다.');
                   }
                 }
               }
             }
           } catch (error) {
-            console.log('개별 취약점 이슈 생성 중 오류:', error.message);
-          }
-    
-    - name: Create security summary issue
-      if: always() && steps.scan_results.outputs.VULNERABILITY_COUNT > 0
-      uses: actions/github-script@v7
-      continue-on-error: true
-      with:
-        script: |
-          const vulnCount = parseInt('${{ steps.scan_results.outputs.VULNERABILITY_COUNT }}');
-          const criticalCount = parseInt('${{ steps.scan_results.outputs.CRITICAL_COUNT }}');
-          const highCount = parseInt('${{ steps.scan_results.outputs.HIGH_COUNT }}');
-          const scanStatus = '${{ steps.scan_results.outputs.SCAN_STATUS }}';
-          const policyStatus = '${{ steps.scan_results.outputs.POLICY_STATUS }}';
-          
-          try {
-            const { data: repo } = await github.rest.repos.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo
-            });
-            
-            if (!repo.has_issues) {
-              console.log('Issues 기능이 비활성화되어 있어 요약 이슈를 생성할 수 없습니다.');
-              console.log(`보안 스캔 요약: ${vulnCount}개 항목 발견 (Critical: ${criticalCount}개, High: ${highCount}개)`);
-              return;
-            }
-            
-            // 중복 방지를 위한 기존 요약 이슈 확인
-            const existingIssues = await github.rest.issues.listForRepo({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              labels: 'blackduck,security-summary',
-              state: 'open'
-            });
-            
-            const today = new Date().toISOString().split('T')[0];
-            const hasTodayIssue = existingIssues.data.some(issue => 
-              issue.title.includes(today) && issue.title.includes('BlackDuck SCA 스캔 요약')
-            );
-            
-            if (hasTodayIssue) {
-              console.log('오늘 날짜의 요약 이슈가 이미 존재합니다.');
-              return;
-            }
-            
-            const policyIcon = policyStatus === 'IN_VIOLATION' ? '🚨' : '✅';
-            const summaryIcon = criticalCount > 0 ? '🔴' : vulnCount > 0 ? '🟠' : '✅';
-            
-            await github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title: `${summaryIcon} BlackDuck SCA 스캔 요약: ${vulnCount}개 항목 - ${today}`,
-              body: `BlackDuck SCA 스캔 결과 요약입니다.
-              
-## 📊 스캔 결과 요약
-- **총 발견 항목**: ${vulnCount}개
-- **Critical**: ${criticalCount}개 🔴
-- **High**: ${highCount}개 🟠  
-- **정책 준수**: ${policyIcon} ${policyStatus}
-- **스캔 상태**: ${scanStatus}
-
-## 📋 상세 정보
-- **프로젝트**: ${process.env.DETECT_PROJECT_NAME}
-- **브랜치**: ${context.ref}
-- **커밋**: ${context.sha}
-- **스캔 일시**: ${new Date().toLocaleString('ko-KR', {timeZone: 'Asia/Seoul'})}
-
-## 🔍 개별 취약점 이슈
-개별 취약점별로 별도 이슈가 생성되었습니다. 다음 라벨로 필터링하여 확인하세요:
-- blackduck-vulnerability: 개별 취약점 이슈
-- critical: Critical 수준 취약점
-- high: High 수준 취약점
-
-## 📁 관련 자료
-- [실행 로그](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})
-- [아티팩트 다운로드](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}) - SARIF 보고서 및 로그 파일
-
-## ✅ 권장 조치사항
-1. **우선순위**: Critical → High → Medium 순으로 해결
-2. **개별 이슈 확인**: 각 취약점별 상세 정보 및 해결방법 검토
-3. **의존성 업데이트**: 보안 패치가 포함된 최신 버전으로 업데이트
-4. **재스캔**: 수정 후 워크플로우를 다시 실행하여 해결 확인
-
-${policyStatus === 'IN_VIOLATION' ? '🚨 **정책 위반이 발견되었습니다.** BlackDuck 정책을 검토하고 필요한 조치를 취해주세요.' : ''}
-
-> 이 이슈는 BlackDuck SCA 스캔에서 자동으로 생성된 요약 보고서입니다.`,
-              labels: [
-                'blackduck',
-                'security-summary', 
-                'security',
-                vulnCount >= 5 ? 'high-priority' : 'medium-priority',
-                'auto-generated'
-              ]
-            });
-            
-            console.log('보안 스캔 요약 이슈가 생성되었습니다.');
-            
-          } catch (error) {
-            console.log('요약 이슈 생성 중 오류:', error.message);
-            console.log('보안 스캔 결과를 로그에 출력합니다:');
-            console.log(`발견된 항목: ${vulnCount}개 (Critical: ${criticalCount}개, High: ${highCount}개)`);
+            console.log('개별 취약점 이슈 생성 중 오류: ' + error.message);
           }
 
   notify-results:
@@ -534,46 +363,31 @@ ${policyStatus === 'IN_VIOLATION' ? '🚨 **정책 위반이 발견되었습니�
     steps:
     - name: Notify on scan failure
       uses: actions/github-script@v7
-      continue-on-error: true  # Issues가 비활성화된 경우 무시
+      continue-on-error: true
       with:
         script: |
-          console.log('🚨 BlackDuck SCA 스캔이 실패했습니다.');
-          console.log(`브랜치: ${context.ref}`);
-          console.log(`커밋: ${context.sha}`);
-          console.log(`실행 링크: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`);
+          console.log('BlackDuck SCA 스캔이 실패했습니다.');
+          console.log('브랜치: ' + context.ref);
+          console.log('커밋: ' + context.sha);
+          console.log('실행 링크: ' + context.serverUrl + '/' + context.repo.owner + '/' + context.repo.repo + '/actions/runs/' + context.runId);
           
           try {
-            // Issues 기능이 활성화되어 있는지 확인
-            const { data: repo } = await github.rest.repos.get({
+            const repo = await github.rest.repos.get({
               owner: context.repo.owner,
               repo: context.repo.repo
             });
             
-            if (repo.has_issues) {
+            if (repo.data.has_issues) {
               await github.rest.issues.create({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                title: `🚨 BlackDuck SCA 스캔 실패 - ${new Date().toISOString().split('T')[0]}`,
-                body: `BlackDuck SCA 스캔이 실패했습니다.
-                
-                ## 실행 정보
-                - **브랜치**: ${context.ref}
-                - **커밋**: ${context.sha}
-                - **트리거**: ${context.eventName}
-                - **실행 링크**: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}
-                
-                ## 가능한 원인
-                - BlackDuck 서버 연결 문제
-                - 인증 토큰 만료
-                - 프로젝트 빌드 실패
-                - 정책 위반 (BLOCKER/CRITICAL)
-                
-                **🔧 로그를 확인하여 문제를 해결해주세요.**`,
+                title: 'BlackDuck SCA 스캔 실패 - ' + new Date().toISOString().split('T')[0],
+                body: 'BlackDuck SCA 스캔이 실패했습니다.\n\n## 실행 정보\n- **브랜치**: ' + context.ref + '\n- **커밋**: ' + context.sha + '\n- **트리거**: ' + context.eventName + '\n- **실행 링크**: ' + context.serverUrl + '/' + context.repo.owner + '/' + context.repo.repo + '/actions/runs/' + context.runId + '\n\n## 가능한 원인\n- BlackDuck 서버 연결 문제\n- 인증 토큰 만료\n- 프로젝트 빌드 실패\n- 정책 위반 (BLOCKER/CRITICAL)\n\n로그를 확인하여 문제를 해결해주세요.',
                 labels: ['security', 'blackduck', 'failure', 'urgent']
               });
             } else {
-              console.log('Issues 기능이 비활성화되어 있습니다. 로그로만 알림을 표시합니다.');
+              console.log('Issues 기능이 비활성화되어 있습니다.');
             }
           } catch (error) {
-            console.log('Issues 생성 실패, 로그로 알림을 대체합니다:', error.message);
+            console.log('Issues 생성 실패: ' + error.message);
           }
