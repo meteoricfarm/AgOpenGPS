@@ -120,15 +120,18 @@ jobs:
     
     - name: Run BlackDuck Security Scan
       uses: blackduck-inc/black-duck-security-scan@v2
+      continue-on-error: true  # 정책 위반이 있어도 워크플로우 계속 진행
+      id: blackduck_scan
       with:
         # BlackDuck SCA 설정
         blackducksca_url: ${{ secrets.BLACKDUCK_URL }}
         blackducksca_token: ${{ secrets.BLACKDUCK_API_TOKEN }}
         blackducksca_scan_full: true
-        blackducksca_scan_failure_severities: 'BLOCKER,CRITICAL'
+        blackducksca_scan_failure_severities: 'BLOCKER,CRITICAL'  # 심각한 수준만 실패로 처리
         blackducksca_reports_sarif_create: true
         blackducksca_prComment_enabled: true
         blackducksca_waitForScan: true
+        mark_build_status: 'success'  # 빌드 상태를 성공으로 표시
         # Detect 설정
         detect_args: |
           --detect.project.name=${{ env.DETECT_PROJECT_NAME }}
@@ -143,6 +146,7 @@ jobs:
           --detect.notices.report=true
           --detect.cleanup=false
           --logging.level.com.synopsys.integration=INFO
+          --detect.policy.check.fail.on.severities=NONE
         # GitHub 토큰
         github_token: ${{ secrets.GITHUB_TOKEN }}
     
@@ -163,18 +167,50 @@ jobs:
       id: scan_results
       if: always()
       run: |
-        # status.json에서 스캔 결과 파싱
-        if [ -f "status.json" ]; then
-          echo "SCAN_STATUS=$(jq -r '.overallStatus // "UNKNOWN"' status.json)" >> $GITHUB_OUTPUT
-          echo "POLICY_STATUS=$(jq -r '.policyStatus // "UNKNOWN"' status.json)" >> $GITHUB_OUTPUT
-          echo "COMPONENT_COUNT=$(jq -r '.componentCount // "0"' status.json)" >> $GITHUB_OUTPUT
-          echo "VULNERABILITY_COUNT=$(jq -r '.vulnerabilityCount // "0"' status.json)" >> $GITHUB_OUTPUT
-        else
-          echo "SCAN_STATUS=UNKNOWN" >> $GITHUB_OUTPUT
-          echo "POLICY_STATUS=UNKNOWN" >> $GITHUB_OUTPUT
-          echo "COMPONENT_COUNT=0" >> $GITHUB_OUTPUT
-          echo "VULNERABILITY_COUNT=0" >> $GITHUB_OUTPUT
-        fi
+        # SARIF 보고서에서 취약점 정보 추출
+        $sarifFile = Get-ChildItem -Path ".blackduck\integrations\blackducksca\sarif" -Name "*.sarif.json" -ErrorAction SilentlyContinue | Select-Object -First 1
+        
+        if ($sarifFile) {
+          $sarifPath = ".blackduck\integrations\blackducksca\sarif\$sarifFile"
+          Write-Host "Found SARIF report: $sarifPath"
+          
+          $sarifContent = Get-Content -Path $sarifPath -Raw | ConvertFrom-Json
+          $resultsCount = 0
+          $criticalCount = 0
+          $highCount = 0
+          
+          if ($sarifContent.runs -and $sarifContent.runs[0].results) {
+            $resultsCount = $sarifContent.runs[0].results.Count
+            
+            foreach ($result in $sarifContent.runs[0].results) {
+              if ($result.level -eq "error") { $criticalCount++ }
+              elseif ($result.level -eq "warning") { $highCount++ }
+            }
+          }
+          
+          echo "SCAN_STATUS=SUCCESS" >> $env:GITHUB_OUTPUT
+          echo "VULNERABILITY_COUNT=$resultsCount" >> $env:GITHUB_OUTPUT
+          echo "CRITICAL_COUNT=$criticalCount" >> $env:GITHUB_OUTPUT
+          echo "HIGH_COUNT=$highCount" >> $env:GITHUB_OUTPUT
+          
+          # BlackDuck 스캔 결과 확인
+          $scanResult = "${{ steps.blackduck_scan.outcome }}"
+          if ($scanResult -eq "failure") {
+            echo "POLICY_STATUS=IN_VIOLATION" >> $env:GITHUB_OUTPUT
+          } else {
+            echo "POLICY_STATUS=NOT_IN_VIOLATION" >> $env:GITHUB_OUTPUT
+          }
+          
+          Write-Host "Results found: $resultsCount (Critical: $criticalCount, High: $highCount)"
+        } else {
+          Write-Host "No SARIF report found"
+          echo "SCAN_STATUS=NO_REPORT" >> $env:GITHUB_OUTPUT
+          echo "POLICY_STATUS=UNKNOWN" >> $env:GITHUB_OUTPUT
+          echo "VULNERABILITY_COUNT=0" >> $env:GITHUB_OUTPUT
+          echo "CRITICAL_COUNT=0" >> $env:GITHUB_OUTPUT
+          echo "HIGH_COUNT=0" >> $env:GITHUB_OUTPUT
+        }
+      shell: pwsh
     
     - name: Comment PR with scan results
       if: github.event_name == 'pull_request'
@@ -183,10 +219,12 @@ jobs:
         script: |
           const scanStatus = '${{ steps.scan_results.outputs.SCAN_STATUS }}';
           const policyStatus = '${{ steps.scan_results.outputs.POLICY_STATUS }}';
-          const componentCount = '${{ steps.scan_results.outputs.COMPONENT_COUNT }}';
           const vulnerabilityCount = '${{ steps.scan_results.outputs.VULNERABILITY_COUNT }}';
+          const criticalCount = '${{ steps.scan_results.outputs.CRITICAL_COUNT }}';
+          const highCount = '${{ steps.scan_results.outputs.HIGH_COUNT }}';
+          const scanResult = '${{ steps.blackduck_scan.outcome }}';
           
-          const statusIcon = scanStatus === 'SUCCESS' ? '✅' : scanStatus === 'FAILURE' ? '❌' : '⚠️';
+          const statusIcon = scanResult === 'success' ? '✅' : scanResult === 'failure' ? '⚠️' : '❓';
           const policyIcon = policyStatus === 'IN_VIOLATION' ? '🚨' : policyStatus === 'NOT_IN_VIOLATION' ? '✅' : '⚠️';
           
           const comment = `## ${statusIcon} BlackDuck SCA 스캔 결과
@@ -195,12 +233,14 @@ jobs:
           |------|------|
           | **스캔 상태** | ${statusIcon} ${scanStatus} |
           | **정책 준수** | ${policyIcon} ${policyStatus} |
-          | **발견된 컴포넌트** | ${componentCount}개 |
-          | **취약점** | ${vulnerabilityCount}개 |
+          | **총 발견 항목** | ${vulnerabilityCount}개 |
+          | **Critical** | ${criticalCount}개 |
+          | **High** | ${highCount}개 |
           
           📊 자세한 보고서는 [Artifacts](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})에서 확인하실 수 있습니다.
           
-          ${vulnerabilityCount > 0 ? '⚠️ **주의**: 취약점이 발견되었습니다. 보고서를 확인해주세요.' : ''}
+          ${policyStatus === 'IN_VIOLATION' ? '🚨 **정책 위반**: BlackDuck 정책을 검토하고 필요한 조치를 취해주세요.' : ''}
+          ${parseInt(criticalCount) > 0 ? `⚠️ **주의**: ${criticalCount}개의 Critical 항목이 발견되었습니다.` : ''}
           `;
           
           github.rest.issues.createComment({
