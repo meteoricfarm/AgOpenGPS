@@ -5,8 +5,8 @@ on:
     branches: [main, master, develop]
   pull_request:
     branches: [main, master]
-  # schedule:
-    # - cron: '0 2 * * 0'
+  schedule:
+    - cron: '0 2 * * 0'
   workflow_dispatch:
 
 env:
@@ -263,7 +263,21 @@ jobs:
                   // 컴포넌트별로 취약점 그룹화
                   const componentGroups = {};
                   vulnerabilities.forEach(vuln => {
-                    const component = vuln.locations?.[0]?.physicalLocation?.artifactLocation?.uri || 'Unknown component';
+                    let component = vuln.locations?.[0]?.physicalLocation?.artifactLocation?.uri || 'Unknown component';
+                    
+                    // URL 디코딩 및 경로 정리
+                    component = decodeURIComponent(component);
+                    
+                    // 파일 경로에서 파일명만 추출 (Windows/Unix 경로 모두 처리)
+                    const pathSeparators = /[\\\/]/;
+                    if (pathSeparators.test(component)) {
+                      const pathParts = component.split(pathSeparators);
+                      component = pathParts[pathParts.length - 1]; // 마지막 부분(파일명)만 사용
+                    }
+                    
+                    // 특수문자 정리 (GitHub 이슈 제목에 적합하게)
+                    component = component.replace(/[<>:"|?*]/g, '_');
+                    
                     if (!componentGroups[component]) {
                       componentGroups[component] = [];
                     }
