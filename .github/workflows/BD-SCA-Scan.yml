@@ -1,0 +1,195 @@
+name: BlackDuck SCA Scan
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master ]
+  # schedule:
+    # 매주 일요일 오전 2시(UTC)에 실행
+    # - cron: '0 2 * * 0'
+  workflow_dispatch:
+    # 수동 실행 가능
+
+env:
+  # BlackDuck 프로젝트 설정
+  DETECT_PROJECT_NAME: "AgOpenGPS"
+  DETECT_PROJECT_VERSION_NAME: "${{ github.ref_name }}-${{ github.run_number }}"
+
+jobs:
+  blackduck-scan:
+    runs-on: ubuntu-latest
+    name: BlackDuck Security Scan
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # 전체 히스토리를 가져와서 더 정확한 분석
+    
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: |
+          6.0.x
+          7.0.x
+          8.0.x
+    
+    - name: Restore NuGet packages
+      run: dotnet restore
+    
+    - name: Build project
+      run: dotnet build --no-restore --configuration Release
+    
+    - name: Run BlackDuck Security Scan
+      uses: blackduck-inc/black-duck-security-scan@v2
+      env:
+        # BlackDuck 서버 연결 정보
+        BLACKDUCK_URL: ${{ secrets.BLACKDUCK_URL }}
+        BLACKDUCK_API_TOKEN: ${{ secrets.BLACKDUCK_API_TOKEN }}
+        # 프로젝트 설정
+        DETECT_PROJECT_NAME: ${{ env.DETECT_PROJECT_NAME }}
+        DETECT_PROJECT_VERSION_NAME: ${{ env.DETECT_PROJECT_VERSION_NAME }}
+        DETECT_CODE_LOCATION_NAME: "${{ env.DETECT_PROJECT_NAME }}-${{ github.ref_name }}"
+        # 스캔 설정
+        DETECT_SOURCE_PATH: "."
+        DETECT_EXCLUDED_DIRECTORIES: "bin,obj,packages,.git,.vs,.vscode,node_modules"
+        DETECT_DETECTOR_SEARCH_DEPTH: "10"
+        # .NET 관련 설정
+        DETECT_NUGET_INSPECTOR_NAME: "classic"
+        DETECT_DOTNET_PATH: "/usr/share/dotnet/dotnet"
+        # 정책 및 보고서 설정
+        DETECT_POLICY_CHECK_FAIL_ON_SEVERITIES: "BLOCKER,CRITICAL"
+        DETECT_RISK_REPORT_PDF: "true"
+        DETECT_NOTICES_REPORT: "true"
+        # 로그 레벨
+        LOGGING_LEVEL_COM_SYNOPSYS_INTEGRATION: "INFO"
+      with:
+        # Action 설정
+        args: '--detect.cleanup=false'
+    
+    - name: Upload BlackDuck Reports
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: blackduck-reports-${{ github.run_number }}
+        path: |
+          **/BlackDuck_*_RiskReport.pdf
+          **/BlackDuck_*_NoticesReport.txt
+          **/scan.cli*.log
+          **/status.json
+          **/detect-*.log
+        retention-days: 30
+    
+    - name: Parse scan results
+      id: scan_results
+      if: always()
+      run: |
+        # status.json에서 스캔 결과 파싱
+        if [ -f "status.json" ]; then
+          echo "SCAN_STATUS=$(jq -r '.overallStatus // "UNKNOWN"' status.json)" >> $GITHUB_OUTPUT
+          echo "POLICY_STATUS=$(jq -r '.policyStatus // "UNKNOWN"' status.json)" >> $GITHUB_OUTPUT
+          echo "COMPONENT_COUNT=$(jq -r '.componentCount // "0"' status.json)" >> $GITHUB_OUTPUT
+          echo "VULNERABILITY_COUNT=$(jq -r '.vulnerabilityCount // "0"' status.json)" >> $GITHUB_OUTPUT
+        else
+          echo "SCAN_STATUS=UNKNOWN" >> $GITHUB_OUTPUT
+          echo "POLICY_STATUS=UNKNOWN" >> $GITHUB_OUTPUT
+          echo "COMPONENT_COUNT=0" >> $GITHUB_OUTPUT
+          echo "VULNERABILITY_COUNT=0" >> $GITHUB_OUTPUT
+        fi
+    
+    - name: Comment PR with scan results
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const scanStatus = '${{ steps.scan_results.outputs.SCAN_STATUS }}';
+          const policyStatus = '${{ steps.scan_results.outputs.POLICY_STATUS }}';
+          const componentCount = '${{ steps.scan_results.outputs.COMPONENT_COUNT }}';
+          const vulnerabilityCount = '${{ steps.scan_results.outputs.VULNERABILITY_COUNT }}';
+          
+          const statusIcon = scanStatus === 'SUCCESS' ? '✅' : scanStatus === 'FAILURE' ? '❌' : '⚠️';
+          const policyIcon = policyStatus === 'IN_VIOLATION' ? '🚨' : policyStatus === 'NOT_IN_VIOLATION' ? '✅' : '⚠️';
+          
+          const comment = `## ${statusIcon} BlackDuck SCA 스캔 결과
+          
+          | 항목 | 결과 |
+          |------|------|
+          | **스캔 상태** | ${statusIcon} ${scanStatus} |
+          | **정책 준수** | ${policyIcon} ${policyStatus} |
+          | **발견된 컴포넌트** | ${componentCount}개 |
+          | **취약점** | ${vulnerabilityCount}개 |
+          
+          📊 자세한 보고서는 [Artifacts](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})에서 확인하실 수 있습니다.
+          
+          ${vulnerabilityCount > 0 ? '⚠️ **주의**: 취약점이 발견되었습니다. 보고서를 확인해주세요.' : ''}
+          `;
+          
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: comment
+          });
+    
+    - name: Create security issue on high vulnerabilities
+      if: always() && steps.scan_results.outputs.VULNERABILITY_COUNT > 0
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const vulnCount = parseInt('${{ steps.scan_results.outputs.VULNERABILITY_COUNT }}');
+          const scanStatus = '${{ steps.scan_results.outputs.SCAN_STATUS }}';
+          
+          if (vulnCount >= 5) {  // 5개 이상의 취약점이 발견된 경우
+            github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `🚨 보안 취약점 발견: ${vulnCount}개 - ${new Date().toISOString().split('T')[0]}`,
+              body: `BlackDuck SCA 스캔에서 **${vulnCount}개**의 취약점이 발견되었습니다.
+              
+              ## 스캔 정보
+              - **프로젝트**: ${process.env.DETECT_PROJECT_NAME}
+              - **브랜치**: ${context.ref}
+              - **커밋**: ${context.sha}
+              - **스캔 상태**: ${scanStatus}
+              
+              ## 조치 필요
+              1. [실행 로그](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})에서 상세 보고서 확인
+              2. 고위험 취약점 우선 해결
+              3. 의존성 업데이트 검토
+              
+              **⚠️ 이 이슈는 취약점이 해결될 때까지 열어두시기 바랍니다.**`,
+              labels: ['security', 'vulnerability', 'blackduck', 'high-priority']
+            });
+          }
+
+  notify-results:
+    needs: blackduck-scan
+    runs-on: ubuntu-latest
+    if: always() && needs.blackduck-scan.result == 'failure'
+    steps:
+    - name: Notify on scan failure
+      uses: actions/github-script@v7
+      with:
+        script: |
+          github.rest.issues.create({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            title: `🚨 BlackDuck SCA 스캔 실패 - ${new Date().toISOString().split('T')[0]}`,
+            body: `BlackDuck SCA 스캔이 실패했습니다.
+            
+            ## 실행 정보
+            - **브랜치**: ${context.ref}
+            - **커밋**: ${context.sha}
+            - **트리거**: ${context.eventName}
+            - **실행 링크**: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}
+            
+            ## 가능한 원인
+            - BlackDuck 서버 연결 문제
+            - 인증 토큰 만료
+            - 프로젝트 빌드 실패
+            - 정책 위반 (BLOCKER/CRITICAL)
+            
+            **🔧 로그를 확인하여 문제를 해결해주세요.**`,
+            labels: ['security', 'blackduck', 'failure', 'urgent']
+          });
