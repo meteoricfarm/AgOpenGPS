@@ -1,143 +1,4 @@
-- name: Create security summary issue    
-    - name: Create individual vulnerability issues
-      if: always() && steps.scan_results.outputs.VULNERABILITY_COUNT > 0
-      uses: actions/github-script@v7
-      continue-on-error: true
-      with:
-        script: |
-          const fs = require('fs');
-          const path = require('path');
-          
-          // SARIF 파일에서 개별 취약점 정보 추출
-          try {
-            // SARIF 파일 찾기
-            const sarifPath = '.blackduck\\integrations\\blackducksca\\sarif';
-            if (fs.existsSync(sarifPath)) {
-              const sarifFiles = fs.readdirSync(sarifPath).filter(file => file.endsWith('.sarif.json'));
-              
-              if (sarifFiles.length > 0) {
-                const sarifFilePath = path.join(sarifPath, sarifFiles[0]);
-                const sarifContent = JSON.parse(fs.readFileSync(sarifFilePath, 'utf8'));
-                
-                // 기존 이슈들 확인하여 중복 방지
-                const existingIssues = await github.rest.issues.listForRepo({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  labels: 'blackduck-vulnerability',
-                  state: 'open'
-                });
-                
-                const existingTitles = existingIssues.data.map(issue => issue.title);
-                
-                if (sarifContent.runs && sarifContent.runs[0] && sarifContent.runs[0].results) {
-                  const vulnerabilities = sarifContent.runs[0].results;
-                  console.log(`발견된 취약점 수: ${vulnerabilities.length}개`);
-                  
-                  // 최대 10개까지만 이슈 생성 (스팸 방지)
-                  const maxIssues = Math.min(vulnerabilities.length, 10);
-                  
-                  for (let i = 0; i < maxIssues; i++) {
-                    const vuln = vulnerabilities[i];
-                    
-                    // 취약점 정보 추출
-                    const ruleId = vuln.ruleId || 'Unknown';
-                    const message = vuln.message?.text || 'No description available';
-                    const level = vuln.level || 'info';
-                    const component = vuln.locations?.[0]?.physicalLocation?.artifactLocation?.uri || 'Unknown component';
-                    
-                    // 중복 검사를 위한 제목 생성
-                    const issueTitle = `취약점: ${ruleId} - ${component}`;
-                    
-                    // 이미 존재하는 이슈인지 확인
-                    if (existingTitles.some(title => title.includes(ruleId) && title.includes(component))) {
-                      console.log(`중복 이슈 스킵: ${issueTitle}`);
-                      continue;
-                    }
-                    
-                    // 심각도별 라벨 및 아이콘 설정
-                    let severityLabel, severityIcon, priorityLabel;
-                    switch(level.toLowerCase()) {
-                      case 'error':
-                        severityLabel = 'critical';
-                        severityIcon = '🔴';
-                        priorityLabel = 'high-priority';
-                        break;
-                      case 'warning':
-                        severityLabel = 'high';
-                        severityIcon = '🟠';
-                        priorityLabel = 'medium-priority';
-                        break;
-                      default:
-                        severityLabel = 'medium';
-                        severityIcon = '🟡';
-                        priorityLabel = 'low-priority';
-                    }
-                    
-                    // 취약점 상세 정보
-                    const ruleInfo = sarifContent.runs[0].tool?.driver?.rules?.find(rule => rule.id === ruleId);
-                    const description = ruleInfo?.fullDescription?.text || ruleInfo?.shortDescription?.text || message;
-                    const helpUri = ruleInfo?.helpUri || '';
-                    
-                    const issueBody = `${severityIcon} **심각도**: ${severityLabel.toUpperCase()}
-                    
-## 취약점 정보
-- **Rule ID**: ${ruleId}
-- **컴포넌트**: ${component}
-- **레벨**: ${level}
-- **스캔 일시**: ${new Date().toISOString().split('T')[0]}
-
-## 설명
-${description}
-
-${helpUri ? `## 참고 자료\n[취약점 상세 정보](${helpUri})` : ''}
-
-## 조치 방법
-1. 해당 컴포넌트의 최신 버전 확인
-2. 보안 패치가 포함된 버전으로 업데이트
-3. 대안 라이브러리 검토 (필요시)
-4. 취약점 해결 후 재스캔 실행
-
-## 관련 정보
-- **프로젝트**: ${process.env.DETECT_PROJECT_NAME}
-- **브랜치**: ${context.ref}
-- **실행 로그**: [Actions 로그](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})
-
-> 이 이슈는 BlackDuck SCA 스캔에서 자동으로 생성되었습니다.`;
-
-                    try {
-                      const issue = await github.rest.issues.create({
-                        owner: context.repo.owner,
-                        repo: context.repo.repo,
-                        title: issueTitle,
-                        body: issueBody,
-                        labels: [
-                          'blackduck-vulnerability',
-                          'security',
-                          severityLabel,
-                          priorityLabel,
-                          'auto-generated'
-                        ]
-                      });
-                      
-                      console.log(`이슈 생성 완료: ${issueTitle} (#${issue.data.number})`);
-                      
-                      // API 속도 제한 방지를 위한 딜레이
-                      await new Promise(resolve => setTimeout(resolve, 1000));
-                      
-                    } catch (error) {
-                      console.log(`이슈 생성 실패 (${issueTitle}):`, error.message);
-                    }
-                  }
-                  
-                  if (vulnerabilities.length > 10) {
-                    console.log(`${vulnerabilities.length - 10}개의 추가 취약점이 있습니다. 요약 이슈에서 확인하세요.`);
-                  }
-                }
-              }
-            }
-          } catch (error) {
-            console.log('개별 취약점 이슈 생성 중 오류:', error.message);
-          }name: BlackDuck SCA Scan
+name: BlackDuck SCA Scan
 
 on:
   push:
@@ -180,7 +41,7 @@ jobs:
     
     - name: Setup NuGet
       uses: nuget/setup-nuget@v2
-    
+
     - name: Find solution/project files
       id: find_projects
       run: |
@@ -390,7 +251,7 @@ jobs:
             repo: context.repo.repo,
             body: comment
           });
-    
+
     - name: Security Summary
       if: always()
       run: |
@@ -425,6 +286,147 @@ jobs:
         Write-Host "📊 상세 보고서는 아티팩트에서 확인하세요." -ForegroundColor Cyan
         Write-Host "================================" -ForegroundColor Cyan
       shell: pwsh
+    
+    - name: Create individual vulnerability issues
+      if: always() && steps.scan_results.outputs.VULNERABILITY_COUNT > 0
+      uses: actions/github-script@v7
+      continue-on-error: true
+      with:
+        script: |
+          const fs = require('fs');
+          const path = require('path');
+          
+          // SARIF 파일에서 개별 취약점 정보 추출
+          try {
+            // SARIF 파일 찾기
+            const sarifPath = '.blackduck\\integrations\\blackducksca\\sarif';
+            if (fs.existsSync(sarifPath)) {
+              const sarifFiles = fs.readdirSync(sarifPath).filter(file => file.endsWith('.sarif.json'));
+              
+              if (sarifFiles.length > 0) {
+                const sarifFilePath = path.join(sarifPath, sarifFiles[0]);
+                const sarifContent = JSON.parse(fs.readFileSync(sarifFilePath, 'utf8'));
+                
+                // 기존 이슈들 확인하여 중복 방지
+                const existingIssues = await github.rest.issues.listForRepo({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  labels: 'blackduck-vulnerability',
+                  state: 'open'
+                });
+                
+                const existingTitles = existingIssues.data.map(issue => issue.title);
+                
+                if (sarifContent.runs && sarifContent.runs[0] && sarifContent.runs[0].results) {
+                  const vulnerabilities = sarifContent.runs[0].results;
+                  console.log(`발견된 취약점 수: ${vulnerabilities.length}개`);
+                  
+                  // 최대 10개까지만 이슈 생성 (스팸 방지)
+                  const maxIssues = Math.min(vulnerabilities.length, 10);
+                  
+                  for (let i = 0; i < maxIssues; i++) {
+                    const vuln = vulnerabilities[i];
+                    
+                    // 취약점 정보 추출
+                    const ruleId = vuln.ruleId || 'Unknown';
+                    const message = vuln.message?.text || 'No description available';
+                    const level = vuln.level || 'info';
+                    const component = vuln.locations?.[0]?.physicalLocation?.artifactLocation?.uri || 'Unknown component';
+                    
+                    // 중복 검사를 위한 제목 생성
+                    const issueTitle = `취약점: ${ruleId} - ${component}`;
+                    
+                    // 이미 존재하는 이슈인지 확인
+                    if (existingTitles.some(title => title.includes(ruleId) && title.includes(component))) {
+                      console.log(`중복 이슈 스킵: ${issueTitle}`);
+                      continue;
+                    }
+                    
+                    // 심각도별 라벨 및 아이콘 설정
+                    let severityLabel, severityIcon, priorityLabel;
+                    switch(level.toLowerCase()) {
+                      case 'error':
+                        severityLabel = 'critical';
+                        severityIcon = '🔴';
+                        priorityLabel = 'high-priority';
+                        break;
+                      case 'warning':
+                        severityLabel = 'high';
+                        severityIcon = '🟠';
+                        priorityLabel = 'medium-priority';
+                        break;
+                      default:
+                        severityLabel = 'medium';
+                        severityIcon = '🟡';
+                        priorityLabel = 'low-priority';
+                    }
+                    
+                    // 취약점 상세 정보
+                    const ruleInfo = sarifContent.runs[0].tool?.driver?.rules?.find(rule => rule.id === ruleId);
+                    const description = ruleInfo?.fullDescription?.text || ruleInfo?.shortDescription?.text || message;
+                    const helpUri = ruleInfo?.helpUri || '';
+                    
+                    const issueBody = `${severityIcon} **심각도**: ${severityLabel.toUpperCase()}
+                    
+## 취약점 정보
+- **Rule ID**: ${ruleId}
+- **컴포넌트**: ${component}
+- **레벨**: ${level}
+- **스캔 일시**: ${new Date().toISOString().split('T')[0]}
+
+## 설명
+${description}
+
+${helpUri ? `## 참고 자료\n[취약점 상세 정보](${helpUri})` : ''}
+
+## 조치 방법
+1. 해당 컴포넌트의 최신 버전 확인
+2. 보안 패치가 포함된 버전으로 업데이트
+3. 대안 라이브러리 검토 (필요시)
+4. 취약점 해결 후 재스캔 실행
+
+## 관련 정보
+- **프로젝트**: ${process.env.DETECT_PROJECT_NAME}
+- **브랜치**: ${context.ref}
+- **실행 로그**: [Actions 로그](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})
+
+> 이 이슈는 BlackDuck SCA 스캔에서 자동으로 생성되었습니다.`;
+
+                    try {
+                      const issue = await github.rest.issues.create({
+                        owner: context.repo.owner,
+                        repo: context.repo.repo,
+                        title: issueTitle,
+                        body: issueBody,
+                        labels: [
+                          'blackduck-vulnerability',
+                          'security',
+                          severityLabel,
+                          priorityLabel,
+                          'auto-generated'
+                        ]
+                      });
+                      
+                      console.log(`이슈 생성 완료: ${issueTitle} (#${issue.data.number})`);
+                      
+                      // API 속도 제한 방지를 위한 딜레이
+                      await new Promise(resolve => setTimeout(resolve, 1000));
+                      
+                    } catch (error) {
+                      console.log(`이슈 생성 실패 (${issueTitle}):`, error.message);
+                    }
+                  }
+                  
+                  if (vulnerabilities.length > 10) {
+                    console.log(`${vulnerabilities.length - 10}개의 추가 취약점이 있습니다. 요약 이슈에서 확인하세요.`);
+                  }
+                }
+              }
+            }
+          } catch (error) {
+            console.log('개별 취약점 이슈 생성 중 오류:', error.message);
+          }
+    
     - name: Create security summary issue
       if: always() && steps.scan_results.outputs.VULNERABILITY_COUNT > 0
       uses: actions/github-script@v7
