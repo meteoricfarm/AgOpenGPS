@@ -5,8 +5,8 @@ on:
     branches: [main, master, develop]
   pull_request:
     branches: [main, master]
-  schedule:
-    - cron: '0 2 * * 0'
+  # schedule:
+    # - cron: '0 2 * * 0'
   workflow_dispatch:
 
 env:
@@ -268,15 +268,45 @@ jobs:
                     // URL 디코딩 및 경로 정리
                     component = decodeURIComponent(component);
                     
-                    // 파일 경로에서 파일명만 추출 (Windows/Unix 경로 모두 처리)
+                    // SARIF에서 실제 컴포넌트명 추출 시도
+                    // BlackDuck SARIF는 ruleId나 message에 실제 컴포넌트 정보가 있을 수 있음
+                    const ruleId = vuln.ruleId || '';
+                    const message = vuln.message?.text || '';
+                    
+                    // ruleId에서 컴포넌트명 추출 (예: "BDSA-2021-1234/spring-framework/5.3.34")
+                    if (ruleId && ruleId.includes('/')) {
+                      const ruleParts = ruleId.split('/');
+                      if (ruleParts.length >= 2) {
+                        component = ruleParts[1] + (ruleParts[2] ? ' ' + ruleParts[2] : '');
+                      }
+                    }
+                    // message에서 컴포넌트명 추출 시도
+                    else if (message) {
+                      const componentMatch = message.match(/component[:\s]+([^,\s]+(?:\s+[\d\.]+)?)/i);
+                      if (componentMatch) {
+                        component = componentMatch[1];
+                      }
+                      // Maven 좌표 형식 추출 (org.springframework:spring-framework:5.3.34)
+                      const mavenMatch = message.match(/([a-zA-Z][a-zA-Z0-9\.-]*):([a-zA-Z][a-zA-Z0-9\.-]*):?([\d\.]+)?/);
+                      if (mavenMatch) {
+                        component = mavenMatch[2] + (mavenMatch[3] ? ' ' + mavenMatch[3] : '');
+                      }
+                    }
+                    
+                    // 여전히 파일 경로인 경우 파일명만 추출
                     const pathSeparators = /[\\\/]/;
                     if (pathSeparators.test(component)) {
                       const pathParts = component.split(pathSeparators);
-                      component = pathParts[pathParts.length - 1]; // 마지막 부분(파일명)만 사용
+                      component = pathParts[pathParts.length - 1];
                     }
                     
-                    // 특수문자 정리 (GitHub 이슈 제목에 적합하게)
-                    component = component.replace(/[<>:"|?*]/g, '_');
+                    // 특수문자 정리
+                    component = component.replace(/[<>:"|?*]/g, '_').trim();
+                    
+                    // 빈 컴포넌트명 처리
+                    if (!component || component === 'Unknown component') {
+                      component = 'Unknown-' + (ruleId || 'component');
+                    }
                     
                     if (!componentGroups[component]) {
                       componentGroups[component] = [];
@@ -284,11 +314,15 @@ jobs:
                     componentGroups[component].push(vuln);
                   });
                   
-                  // BlackDuck View URL 생성
+                  // BlackDuck View URL 생성 (UI 형식으로 변경)
                   const blackduckUrl = process.env.BLACKDUCK_URL || '${{ secrets.BLACKDUCK_URL }}';
                   const projectName = process.env.DETECT_PROJECT_NAME;
                   const versionName = process.env.DETECT_PROJECT_VERSION_NAME;
-                  const blackduckViewUrl = blackduckUrl + '/api/projects/' + encodeURIComponent(projectName) + '/versions/' + encodeURIComponent(versionName);
+                  
+                  // UI URL 형식: /ui/projects/{projectId}/versions/{versionId}/vulnerability-bom
+                  // 실제 ID를 모르므로 프로젝트 목록 페이지로 링크
+                  const blackduckProjectUrl = blackduckUrl + '/ui/projects';
+                  const blackduckSearchUrl = blackduckUrl + '/ui/projects?q=' + encodeURIComponent(projectName);
                   
                   let processedComponents = 0;
                   const maxComponents = 10; // 최대 10개 컴포넌트까지 처리
@@ -371,7 +405,8 @@ jobs:
                     
                     // BlackDuck 링크 및 조치 방법
                     issueBody += '## 상세 분석 및 해결방법\n';
-                    issueBody += '🔗 **BlackDuck 상세 보고서**: [프로젝트 보기](' + blackduckViewUrl + ')\n\n';
+                    issueBody += '🔗 **BlackDuck 프로젝트**: [' + projectName + ' 검색](' + blackduckSearchUrl + ')\n';
+                    issueBody += '🔍 **BlackDuck 대시보드**: [프로젝트 목록](' + blackduckProjectUrl + ')\n\n';
                     
                     issueBody += '## 권장 조치사항\n';
                     issueBody += '1. **우선순위**: Critical → High → Medium 순으로 해결\n';
